@@ -1,4 +1,4 @@
-import express from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import { PrismaClient } from '@prisma/client';
 
@@ -8,14 +8,26 @@ const prisma = new PrismaClient();
 app.use(cors());
 app.use(express.json());
 
-// chave simples para o coletor
-app.use((req, res, next) => {
+// Rotas PÚBLICAS
+app.get('/health', (_req: Request, res: Response) => res.json({ ok: true }));
+
+app.get('/daily', async (_req: Request, res: Response) => {
+  const days = await prisma.daily.findMany({ orderBy: { day: 'desc' }, take: 30 });
+  res.json(days);
+});
+
+// (Opcional) página raiz pública
+app.get('/', (_req, res) => res.send('OK'));
+
+// Middleware de API-KEY (aplicar SOMENTE nas rotas que precisam)
+function requireApiKey(req: Request, res: Response, next: NextFunction) {
   const key = req.header('x-api-key');
   if (!key || key !== process.env.API_KEY) return res.status(401).send('unauthorized');
   next();
-});
+}
 
-app.post('/ingest', async (req, res) => {
+// Rota PROTEGIDA (aplica o middleware aqui)
+app.post('/ingest', requireApiKey, async (req: Request, res: Response) => {
   const { marker_total, engine_total, engine_printer, engine_copier, engine_fax } = req.body;
 
   const read = await prisma.read.create({
@@ -24,34 +36,32 @@ app.post('/ingest', async (req, res) => {
       engineTotal: Number(engine_total ?? 0),
       enginePrinter: Number(engine_printer ?? 0),
       engineCopier: Number(engine_copier ?? 0),
-      engineFax: Number(engine_fax ?? 0)
+      engineFax: Number(engine_fax ?? 0),
     }
   });
 
-  // agrega no dia
-  const day = new Date();
-  day.setHours(0,0,0,0);
+  const day = new Date(); day.setHours(0,0,0,0);
 
-  // pega última leitura do mesmo dia para calcular deltas
-  const lastReads = await prisma.read.findMany({
+  const firstToday = await prisma.read.findFirst({
     where: { createdAt: { gte: day } },
     orderBy: { createdAt: 'asc' }
   });
 
-  // delta simples em relação à primeira leitura do dia
-  const first = lastReads[0];
-  const printsDelta = read.enginePrinter - first.enginePrinter;
-  const copiesDelta = read.engineCopier - first.engineCopier;
-  const faxDelta    = read.engineFax - first.engineFax;
-  const totalDelta  = read.engineTotal - first.engineTotal;
+  let printsDelta = 0, copiesDelta = 0, faxDelta = 0, totalDelta = 0;
+  if (firstToday) {
+    printsDelta = read.enginePrinter - firstToday.enginePrinter;
+    copiesDelta = read.engineCopier  - firstToday.engineCopier;
+    faxDelta    = read.engineFax     - firstToday.engineFax;
+    totalDelta  = read.engineTotal   - firstToday.engineTotal;
+  }
 
   await prisma.daily.upsert({
     where: { day },
     update: {
-      prints: printsDelta < 0 ? 0 : printsDelta,
-      copies: copiesDelta < 0 ? 0 : copiesDelta,
-      fax:    faxDelta    < 0 ? 0 : faxDelta,
-      total:  totalDelta  < 0 ? 0 : totalDelta
+      prints: Math.max(printsDelta, 0),
+      copies: Math.max(copiesDelta, 0),
+      fax:    Math.max(faxDelta, 0),
+      total:  Math.max(totalDelta, 0)
     },
     create: {
       day,
@@ -63,11 +73,6 @@ app.post('/ingest', async (req, res) => {
   });
 
   res.json({ ok: true });
-});
-
-app.get('/daily', async (req, res) => {
-  const days = await prisma.daily.findMany({ orderBy: { day: 'desc' }, take: 30 });
-  res.json(days);
 });
 
 const port = process.env.PORT || 3000;
