@@ -1,0 +1,26 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Read {
+  id             String   @id @default(cuid())
+  createdAt      DateTime @default(now())
+  markerTotal    Int
+  engineTotal    Int
+  enginePrinter  Int
+  engineCopier   Int
+  engineFax      Int
+}
+
+model Daily {
+  id            String   @id @default(cuid())
+  day           DateTime @unique
+  prints        Int      @default(0)
+  copies        Int      @default(0)
+  fax           Int      @default(0)
+  total         Int      @default(0)
+}
